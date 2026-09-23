@@ -20,19 +20,30 @@ def get_conn():
         c.row_factory=sqlite3.Row
         return c
 
+def hoy_juliano():
+    return date.today().timetuple().tm_yday # hoy 23 sep = 266
+
 def parse_juliano(juliano_str):
     try:
         s=str(juliano_str).strip()
-        if not s or not s.isdigit(): return None
-        if len(s)==5: # YYDDD ej 25265 = dia 265 del 2025
-            yy=int(s[:2]); ddd=int(s[2:])
-            year=2000+yy if yy<70 else 1900+yy
-        elif len(s)==4: # YDDD ej 5265
-            y=int(s[0]); ddd=int(s[1:])
-            year=2020+y
-        else: return None
-        base=date(year,1,1)
-        return base+timedelta(days=ddd-1)
+        if not s.isdigit(): return None
+        ddd=int(s[-3:]) # tomamos ultimos 3 digitos, si ponen 25266 agarra 266
+        if ddd<1 or ddd>366: return None
+        hoy=date.today()
+        hoy_ddd=hoy.timetuple().tm_yday
+        year=hoy.year
+        # si el juliano es mayor que hoy, es del año pasado (ej hoy 266 y ponen 360 = diciembre pasado)
+        if ddd > hoy_ddd:
+            # asumimos año pasado para no dar fecha futura
+            try:
+                base=date(year-1,1,1)
+                return base+timedelta(days=ddd-1)
+            except:
+                base=date(year,1,1)
+                return base+timedelta(days=ddd-1)
+        else:
+            base=date(year,1,1)
+            return base+timedelta(days=ddd-1)
     except: return None
 
 def semaforo_ingreso(fecha_ingreso):
@@ -50,13 +61,12 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS posiciones (codigo TEXT PRIMARY KEY, bloque INT, nivel INT, calle INT, producto TEXT, estibas INT DEFAULT 0, fecha_juliana TEXT DEFAULT '')")
         try: cur.execute("ALTER TABLE posiciones ADD COLUMN IF NOT EXISTS fecha_juliana TEXT DEFAULT ''")
         except: pass
-        cur.execute("CREATE TABLE IF NOT EXISTS config_calles (bloque INT, calle INT, producto_asignado TEXT, PRIMARY KEY(bloque,calle))")
         cur.execute("SELECT COUNT(*) FROM posiciones")
         if cur.fetchone()[0]==0:
             for b in range(1,BLOQUES+1):
                 for n in range(1,NIVELES+1):
                     for c in range(1,CALLES+1):
-                        cur.execute("INSERT INTO posiciones (codigo,bloque,nivel,calle,producto,estibas,fecha_juliana) VALUES (%s,%s,%s,%s,'',0,'') ON CONFLICT DO NOTHING",(f"B{b}-N{n}-C{c}",b,n,c))
+                        cur.execute("INSERT INTO posiciones VALUES (%s,%s,%s,%s,'',0,'') ON CONFLICT DO NOTHING",(f"B{b}-N{n}-C{c}",b,n,c))
     else:
         cur.execute("CREATE TABLE IF NOT EXISTS posiciones (codigo TEXT PRIMARY KEY, bloque INT, nivel INT, calle INT, producto TEXT, estibas INT DEFAULT 0, fecha_juliana TEXT DEFAULT '')")
         cur.execute("SELECT COUNT(*) FROM posiciones")
@@ -74,7 +84,7 @@ HTML = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
 body{background:#f8f9fa}
-.pos{border:2px solid #dee2e6; border-radius:8px; background:white; text-align:center; padding:4px 1px; min-height:70px; font-size:10px; margin:3px; flex:1}
+.pos{border:2px solid #dee2e6; border-radius:8px; background:white; text-align:center; padding:4px 1px; min-height:72px; font-size:10px; margin:3px; flex:1}
 .pos-lleno{border-width:3px}
 .header-bloque{background:#212529; color:white; padding:8px 12px; font-size:13px; font-weight:700}
 .btn-bloque{border-radius:8px; font-weight:700; padding:8px 14px; border:2px solid}
@@ -84,9 +94,10 @@ body{background:#f8f9fa}
 <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
 <h4 class="m-0 fw-bold">📦 Estantería de Flujo</h4>
 <span class="badge bg-dark">{{total}} estibas</span>
-<span class="badge" style="background:#198754">🟢 {{tot_verde}} (0-1d)</span>
-<span class="badge" style="background:#ffc107; color:black">🟡 {{tot_amarillo}} (2-10d)</span>
-<span class="badge" style="background:#dc3545">🔴 {{tot_rojo}} (+10d)</span>
+<span class="badge" style="background:#198754">🟢 {{tot_verde}} hoy/ayer</span>
+<span class="badge" style="background:#ffc107; color:black">🟡 {{tot_amarillo}} 2-10d</span>
+<span class="badge" style="background:#dc3545">🔴 {{tot_rojo}} +10d</span>
+<span class="ms-auto badge bg-primary fs-6">Hoy 23 Sep = {{hoy_jul}} JULIANO</span>
 </div>
 
 <div class="d-flex gap-2 mb-3 flex-wrap">
@@ -105,11 +116,11 @@ body{background:#f8f9fa}
 <div class="d-flex flex-grow-1">
 {% for c in range(1,CALLES+1) %}
 {% set k='B{}-N{}-C{}'.format(b,n,c) %}{% set p=pos.get(k) %}{% set s=sema.get(k) %}
-<div class="pos" style="border-color:{{s.color if p.estibas>0 else '#dee2e6'}}; {{'background:#f8fffa' if s.color=='#198754' and p.estibas>0 else ''}} {{'background:#fffbe6' if s.color=='#ffc107' and p.estibas>0 else ''}} {{'background:#fff5f5' if s.color=='#dc3545' and p.estibas>0 else ''}}">
+<div class="pos" style="border-color:{{s.color if p.estibas>0 else '#dee2e6'}}">
 <div style="font-weight:800">N{{n}}-C{{c}}</div>
 <div style="font-size:9px">{{p.producto[:7] if p.producto else ''}}</div>
 <div>{{p.estibas}} est.</div>
-{% if p.estibas>0 %}<div style="font-size:9px; margin-top:2px">{{s.emoji}} {{p.fecha_juliana}}<br>{{s.txt}} ant.</div>{% endif %}
+{% if p.estibas>0 %}<div style="font-size:9px; margin-top:2px">{{s.emoji}} J:{{p.fecha_juliana}}<br>{{s.txt}}</div>{% endif %}
 </div>
 {% endfor %}
 </div>
@@ -121,7 +132,7 @@ body{background:#f8f9fa}
 <div class="row">
 <div class="col-lg-5">
 <div class="card shadow-sm" style="border:2px solid {{COLORES[bloque_actual].bg if bloque_actual!=0 else '#333'}}">
-<div class="card-header fw-bold text-white" style="background:{{COLORES[bloque_actual].bg if bloque_actual!=0 else '#212529'}}">Trabajando en BLOQUE {{bloque_actual if bloque_actual!=0 else '1'}} - Ingreso Juliano</div>
+<div class="card-header fw-bold text-white" style="background:{{COLORES[bloque_actual].bg if bloque_actual!=0 else '#212529'}}">BLOQUE {{bloque_actual}} - Ingreso Juliano (Hoy={{hoy_jul}})</div>
 <div class="card-body">
 <form method="post" action="/movimiento">
 <div class="row g-1">
@@ -131,24 +142,24 @@ body{background:#f8f9fa}
 <div class="col-3"><label class="small fw-bold">Cant</label><input type="number" name="cantidad" class="form-control form-control-sm" value="1" min="1"></div>
 </div>
 <div class="row g-1 mt-2">
-<div class="col-6"><label class="small fw-bold">Producto</label><input name="producto" class="form-control form-control-sm" placeholder="Ej: Kimi PH" required></div>
-<div class="col-6"><label class="small fw-bold">Juliano Ingreso</label><input name="fecha_juliana" class="form-control form-control-sm" placeholder="Ej: 25265 (hoy)" required></div>
+<div class="col-6"><label class="small fw-bold">Producto</label><input name="producto" class="form-control form-control-sm" placeholder="Kimi PH" required></div>
+<div class="col-6"><label class="small fw-bold">Juliano (Hoy={{hoy_jul}})</label><input name="fecha_juliana" class="form-control form-control-sm" placeholder="Ej: {{hoy_jul}}" value="{{hoy_jul}}" required></div>
 </div>
-<div class="small text-muted mt-1">🟢 0-1 dia (entra hoy) | 🟡 2-10 dias | 🔴 +10 dias = Despachar primero</div>
+<div class="small text-muted mt-2">Ejemplo: Hoy 23 Sep = 266. Si pones 256 = hace 10 dias (🟡), si pones 200 = 🔴 +10 dias</div>
 <div class="row g-1 mt-2">
 <div class="col-6"><select name="tipo" class="form-select form-select-sm"><option value="ALIMENTACION">+ ALIMENTAR</option><option value="DESPACHO">- DESPACHAR</option></select></div>
 <div class="col-6"><input name="responsable" class="form-control form-control-sm" value="John"></div>
 </div>
-<button class="btn btn-primary w-100 mt-3 fw-bold">Guardar</button>
+<button class="btn btn-primary w-100 mt-3 fw-bold">Guardar con Juliano {{hoy_jul}}</button>
 </form>
 </div>
 </div>
 </div>
 <div class="col-lg-7">
-<div class="card"><div class="card-header fw-bold">🔴 Despacho FIFO - Mas antiguo primero (Juliano mas viejo)</div>
+<div class="card"><div class="card-header fw-bold">🔴 Despachar primero - Mas antiguo (FIFO) por Juliano</div>
 <div class="card-body p-1" style="max-height:400px; overflow:auto">
-<table class="table table-sm small mb-0"><tr><th></th><th>Pos</th><th>Producto</th><th>Juliano</th><th>Ingreso</th><th>Antigüedad</th></tr>
-{% for item in lista_fefo %}<tr style="background:{{'#ffdddd' if item.sema.color=='#dc3545' else '#fff3cd' if item.sema.color=='#ffc107' else '#d1e7dd'}}"><td>{{item.sema.emoji}}</td><td>{{item.codigo}}</td><td>{{item.producto}}</td><td>{{item.fecha_juliana}}</td><td>{{item.vence}}</td><td><b>{{item.sema.txt}}</b></td></tr>{% endfor %}
+<table class="table table-sm small mb-0"><tr><th></th><th>Pos</th><th>Prod</th><th>JUL</th><th>Fecha</th><th>Antig.</th></tr>
+{% for item in lista_fefo %}<tr style="background:{{'#ffdddd' if item.sema.color=='#dc3545' else '#fff3cd' if item.sema.color=='#ffc107' else '#d1e7dd'}}"><td>{{item.sema.emoji}}</td><td>{{item.codigo}}</td><td>{{item.producto}}</td><td><b>{{item.fecha_juliana}}</b></td><td>{{item.vence}}</td><td><b>{{item.sema.txt}}</b></td></tr>{% endfor %}
 </table>
 </div></div>
 </div>
@@ -181,23 +192,15 @@ def index():
             else: tot_verde+=1; sema_bloque[bloque]['verde']+=1
             lista_fefo.append({"codigo":codigo,"producto":prod,"fecha_juliana":fj,"vence":fecha_obj.strftime("%d/%m/%Y") if fecha_obj else "-", "sema":s})
     lista_fefo.sort(key=lambda x: x['sema']['dias'], reverse=True)
-    # config calles simple
-    config={b:{c:'' for c in range(1,CALLES+1)} for b in range(1,BLOQUES+1)}
-    cur.execute("SELECT * FROM config_calles" if DATABASE_URL else "SELECT * FROM config_calles")
-    try:
-        for r in cur.fetchall():
-            if DATABASE_URL: config[r[0]][r[1]]=r[2]
-            else: config[r['bloque']][r['calle']]=r['producto_asignado']
-    except: pass
     bloques_ver = list(range(1,BLOQUES+1)) if b_actual==0 else [b_actual]
     cur.close(); conn.close()
-    return render_template_string(HTML, pos=pos, sema=sema, config=config, tot=tot, total=total, bloque=b_actual, bloque_actual=b_actual, bloques_ver=bloques_ver, NIVELES=NIVELES, CALLES=CALLES, BLOQUES=BLOQUES, COLORES=COLORES, tot_rojo=tot_rojo, tot_amarillo=tot_amarillo, tot_verde=tot_verde, sema_bloque=sema_bloque, lista_fefo=lista_fefo)
+    return render_template_string(HTML, pos=pos, sema=sema, tot=tot, total=total, bloque=b_actual, bloque_actual=b_actual, bloques_ver=bloques_ver, NIVELES=NIVELES, CALLES=CALLES, BLOQUES=BLOQUES, COLORES=COLORES, tot_rojo=tot_rojo, tot_amarillo=tot_amarillo, tot_verde=tot_verde, sema_bloque=sema_bloque, lista_fefo=lista_fefo, hoy_jul=hoy_juliano())
 
 @app.route("/movimiento", methods=["POST"])
 def mov():
     conn=get_conn(); cur=conn.cursor()
     b=int(request.form['bloque']); n=int(request.form['nivel']); c=int(request.form['calle'])
-    codigo=f"B{b}-N{n}-C{c}"; prod=request.form['producto']; tipo=request.form['tipo']; cant=int(request.form['cantidad']); fj=request.form.get('fecha_juliana','').strip()
+    codigo=f"B{b}-N{n}-C{c}"; prod=request.form['producto']; tipo=request.form['tipo']; cant=int(request.form['cantidad']); fj=request.form.get('fecha_juliana','').strip()[-3:]
     q="SELECT estibas FROM posiciones WHERE codigo=%s" if DATABASE_URL else "SELECT estibas FROM posiciones WHERE codigo=?"
     cur.execute(q,(codigo,)); row=cur.fetchone()
     actual=row[0] if row else 0
@@ -213,8 +216,7 @@ def mov():
     return redirect(f"/?bloque={b}")
 
 @app.route("/configuracion")
-def configuracion():
-    return redirect("/")
+def configuracion(): return redirect("/")
 
 if __name__=="__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT",5000)))
