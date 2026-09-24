@@ -20,18 +20,13 @@ def get_conn():
         c.row_factory=sqlite3.Row
         return c
 
-def hoy_juliano():
-    return date.today().timetuple().tm_yday
+def hoy_juliano(): return date.today().timetuple().tm_yday
 
 def juliano_a_fecha(ddd):
     try:
         ddd=int(str(ddd)[-3:])
-        hoy=date.today()
-        hoy_ddd=hoy.timetuple().tm_yday
-        if ddd>hoy_ddd:
-            base=date(hoy.year-1,1,1)
-        else:
-            base=date(hoy.year,1,1)
+        hoy=date.today(); hoy_ddd=hoy.timetuple().tm_yday
+        base=date(hoy.year-1,1,1) if ddd>hoy_ddd else date(hoy.year,1,1)
         return base+timedelta(days=ddd-1)
     except: return None
 
@@ -47,25 +42,47 @@ def semaforo(ddd):
 
 def init_db():
     conn=get_conn(); cur=conn.cursor()
-    if DATABASE_URL:
-        cur.execute("CREATE TABLE IF NOT EXISTS posiciones (codigo TEXT PRIMARY KEY, bloque INT, nivel INT, calle INT)")
-        cur.execute("CREATE TABLE IF NOT EXISTS lotes (id SERIAL PRIMARY KEY, codigo TEXT, bloque INT, nivel INT, calle INT, producto TEXT, juliano INT, estibas INT, fecha_ing DATE)")
-        cur.execute("SELECT COUNT(*) FROM posiciones")
-        if cur.fetchone()[0]==0:
-            for b in range(1,BLOQUES+1):
-                for n in range(1,NIVELES+1):
-                    for c in range(1,CALLES+1):
-                        cur.execute("INSERT INTO posiciones VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",(f"B{b}-N{n}-C{c}",b,n,c))
-    else:
-        cur.execute("CREATE TABLE IF NOT EXISTS posiciones (codigo TEXT PRIMARY KEY, bloque INT, nivel INT, calle INT)")
-        cur.execute("CREATE TABLE IF NOT EXISTS lotes (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, bloque INT, nivel INT, calle INT, producto TEXT, juliano INT, estibas INT, fecha_ing TEXT)")
-        cur.execute("SELECT COUNT(*) FROM posiciones")
-        if cur.fetchone()[0]==0:
-            for b in range(1,BLOQUES+1):
-                for n in range(1,NIVELES+1):
-                    for c in range(1,CALLES+1):
-                        cur.execute("INSERT OR IGNORE INTO posiciones VALUES (?,?,?,?)",(f"B{b}-N{n}-C{c}",b,n,c))
-    conn.commit(); cur.close(); conn.close()
+    try:
+        if DATABASE_URL:
+            # posiciones compatible con todo
+            cur.execute("CREATE TABLE IF NOT EXISTS posiciones (codigo TEXT PRIMARY KEY, bloque INT, nivel INT, calle INT, producto TEXT DEFAULT '', estibas INT DEFAULT 0, fecha_juliana TEXT DEFAULT '')")
+            # lotes nuevo - lo creamos si no existe
+            cur.execute("CREATE TABLE IF NOT EXISTS lotes (id SERIAL PRIMARY KEY, codigo TEXT, bloque INT, nivel INT, calle INT, producto TEXT, juliano INT, estibas INT, fecha_ing DATE)")
+            # asegurar columnas
+            cur.execute("ALTER TABLE lotes ADD COLUMN IF NOT EXISTS codigo TEXT")
+            cur.execute("ALTER TABLE lotes ADD COLUMN IF NOT EXISTS producto TEXT")
+            cur.execute("ALTER TABLE lotes ADD COLUMN IF NOT EXISTS juliano INT")
+            cur.execute("ALTER TABLE lotes ADD COLUMN IF NOT EXISTS estibas INT")
+            cur.execute("SELECT COUNT(*) FROM posiciones")
+            if cur.fetchone()[0]==0:
+                for b in range(1,BLOQUES+1):
+                    for n in range(1,NIVELES+1):
+                        for c in range(1,CALLES+1):
+                            cur.execute("INSERT INTO posiciones (codigo,bloque,nivel,calle) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",(f"B{b}-N{n}-C{c}",b,n,c))
+        else:
+            cur.execute("CREATE TABLE IF NOT EXISTS posiciones (codigo TEXT PRIMARY KEY, bloque INT, nivel INT, calle INT)")
+            cur.execute("CREATE TABLE IF NOT EXISTS lotes (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, bloque INT, nivel INT, calle INT, producto TEXT, juliano INT, estibas INT, fecha_ing TEXT)")
+            cur.execute("SELECT COUNT(*) FROM posiciones")
+            if cur.fetchone()[0]==0:
+                for b in range(1,BLOQUES+1):
+                    for n in range(1,NIVELES+1):
+                        for c in range(1,CALLES+1):
+                            cur.execute("INSERT OR IGNORE INTO posiciones (codigo,bloque,nivel,calle) VALUES (?,?,?,?)",(f"B{b}-N{n}-C{c}",b,n,c))
+        conn.commit()
+    except Exception as e:
+        print("DB Init error:", e)
+        conn.rollback()
+        # si falla, borra y recrea lotes
+        try:
+            cur.execute("DROP TABLE IF EXISTS lotes")
+            if DATABASE_URL:
+                cur.execute("CREATE TABLE lotes (id SERIAL PRIMARY KEY, codigo TEXT, bloque INT, nivel INT, calle INT, producto TEXT, juliano INT, estibas INT, fecha_ing DATE)")
+            else:
+                cur.execute("CREATE TABLE lotes (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, bloque INT, nivel INT, calle INT, producto TEXT, juliano INT, estibas INT, fecha_ing TEXT)")
+            conn.commit()
+        except: pass
+    finally:
+        cur.close(); conn.close()
 init_db()
 
 HTML = """
@@ -89,7 +106,6 @@ body{background:#f5f5f5; font-size:13px}
 <span class="badge" style="background:#dc3545">🔴 {{tot_rojo}} 9+d</span>
 <span class="ms-auto badge bg-primary fs-6">Hoy = {{hoy_jul}} JULIANO</span>
 </div>
-
 <div class="d-flex gap-1 mb-2 flex-wrap">
 {% for b in range(1,BLOQUES+1) %}
 <a href="/?bloque={{b}}" class="btn btn-bloque {{'text-white' if bloque==b else ''}}" style="{{'background:'+COLORES[b].bg+'; color:white; border-color:'+COLORES[b].bg if bloque==b else 'background:white; color:'+COLORES[b].bg+'; border-color:'+COLORES[b].bg}}">B{{b}} {{COLORES[b].name}} ({{tot_bloque[b]}})</a>
@@ -97,7 +113,6 @@ body{background:#f5f5f5; font-size:13px}
 <a href="/?bloque=0" class="btn btn-bloque {{'btn-dark text-white' if bloque==0 else 'btn-outline-secondary'}}">TODO ({{total_estibas}})</a>
 <a href="/configuracion" class="btn btn-dark btn-sm ms-auto">⚙️ EDITAR JULIANOS ({{total_lotes}} lotes)</a>
 </div>
-
 {% for b in bloques_ver %}
 <div class="header-bloque rounded-top"><span>BLOQUE {{b}} - {{COLORES[b].name}}</span><span>🟢{{sema_bloque[b].verde}} 🟡{{sema_bloque[b].amarillo}} 🔴{{sema_bloque[b].rojo}}</span></div>
 <div class="bg-white border p-1 mb-3 rounded-bottom">
@@ -108,13 +123,13 @@ body{background:#f5f5f5; font-size:13px}
 {% for c in range(1,CALLES+1) %}
 {% set k='B{}-N{}-C{}'.format(b,n,c) %}{% set lotes=grupos.get(k,[]) %}{% set total=sum(l.estibas for l in lotes) %}
 {% set s=sema_pos.get(k) %}
-<div class="pos {{'pos-ocupado' if total>0 else ''}}" style="border-color:{{s.color if total>0 else '#ccc'}}; {{'background:#fff5f5' if s.color=='#dc3545' and total>0 else ''}}">
+<div class="pos {{'pos-ocupado' if total>0 else ''}}" style="border-color:{{s.color if total>0 else '#ccc'}}">
 <div style="font-weight:800; font-size:10px">N{{n}}-C{{c}}</div>
 <div style="font-weight:700">{{total}} est.</div>
 {% for lote in lotes[:3] %}
 <div class="lote" style="border-left:3px solid {{lote.sema.color}}">{{lote.producto}} {{lote.estibas}}e J{{lote.juliano}} {{lote.sema.emoji}}</div>
 {% endfor %}
-{% if lotes|length>3 %}<div class="lote">+{{lotes|length-3}} lotes más</div>{% endif %}
+{% if lotes|length>3 %}<div class="lote">+{{lotes|length-3}} más</div>{% endif %}
 {% if total==0 %}<div class="text-muted">0 est.</div>{% endif %}
 </div>
 {% endfor %}
@@ -123,7 +138,6 @@ body{background:#f5f5f5; font-size:13px}
 {% endfor %}
 </div>
 {% endfor %}
-
 <div class="row">
 <div class="col-lg-4">
 <div class="card shadow-sm" style="border:2px solid {{COLORES[bloque].bg if bloque!=0 else '#000'}}">
@@ -136,27 +150,26 @@ body{background:#f5f5f5; font-size:13px}
 <div class="col-3"><select name="calle" class="form-select form-select-sm">{% for c in range(1,CALLES+1) %}<option value="{{c}}">C{{c}}</option>{% endfor %}</select></div>
 <div class="col-3"><input type="number" name="cantidad" class="form-control form-control-sm" value="1" min="1"></div>
 </div>
-<input name="producto" class="form-control form-control-sm mt-2" placeholder="Material completo ej: 12005778" required value="12005778">
+<input name="producto" class="form-control form-control-sm mt-2" placeholder="Material ej: 12005778" required value="12005778">
 <div class="row g-1 mt-1">
 <div class="col-6"><input name="juliano" class="form-control form-control-sm" placeholder="Juliano {{hoy_jul}}" value="{{hoy_jul}}" required type="number" min="1" max="366"></div>
 <div class="col-6"><select name="tipo" class="form-select form-select-sm"><option value="ALIMENTACION">+ ALIMENTAR</option><option value="DESPACHO">- DESPACHAR</option></select></div>
 </div>
-<div class="small text-muted mt-1">Ej: 10 estibas J255 + 4 estibas J266 del mismo 12005778 se suman y se ven separadas. FIFO descuenta el más viejo primero.</div>
+<div class="small text-muted mt-1">Ej: 10 est J255 + 4 est J266 del mismo 12005778 se suman separados.</div>
 <button class="btn btn-primary w-100 mt-2 btn-sm fw-bold">Guardar</button>
 </form>
 </div>
 </div>
 </div>
 <div class="col-lg-8">
-<div class="card"><div class="card-header fw-bold py-1">🔴 Despacho FIFO - Mas antiguo primero (Juliano menor)</div>
+<div class="card"><div class="card-header fw-bold py-1">🔴 Despacho FIFO - Juliano menor primero</div>
 <div class="card-body p-1" style="max-height:420px; overflow:auto">
-<table class="table table-sm small mb-0"><tr><th></th><th>Pos</th><th>Material completo</th><th>Est</th><th>JUL</th><th>Fecha</th><th>Antig</th></tr>
+<table class="table table-sm small mb-0"><tr><th></th><th>Pos</th><th>Material</th><th>Est</th><th>JUL</th><th>Fecha</th><th>Antig</th></tr>
 {% for l in lista_fifo %}<tr style="background:{{'#ffdddd' if l.sema.color=='#dc3545' else '#fff3cd' if l.sema.color=='#ffc107' else '#d1e7dd'}}"><td>{{l.sema.emoji}}</td><td>{{l.codigo}}</td><td><b>{{l.producto}}</b></td><td>{{l.estibas}}</td><td><b>{{l.juliano}}</b></td><td>{{l.fecha_str}}</td><td><b>{{l.sema.txt}}</b></td></tr>{% endfor %}
 </table>
 </div></div>
 </div>
 </div>
-
 </div></body></html>
 """
 
@@ -167,7 +180,7 @@ HTML_EDIT = """
 </head><body class="p-3">
 <div class="container-fluid">
 <a href="/" class="btn btn-secondary btn-sm mb-2">← Volver</a>
-<h5 class="fw-bold">⚙️ Editar Julianos - Hoy={{hoy_jul}} (23 Sep=266) - Semaforo: 🟢0-3d 🟡4-8d 🔴9+d</h5>
+<h5 class="fw-bold">⚙️ Editar Julianos - Hoy={{hoy_jul}} - 🟢0-3d 🟡4-8d 🔴9+d</h5>
 <form method="post">
 <table class="table table-sm table-bordered small">
 <tr class="table-dark"><th>ID</th><th>Codigo</th><th>Material completo</th><th>Estibas</th><th>Juliano</th><th>Fecha</th><th>Semaforo</th><th>Borrar</th></tr>
@@ -184,6 +197,8 @@ HTML_EDIT = """
 </table>
 <button class="btn btn-success w-100 fw-bold">💾 GUARDAR CAMBIOS</button>
 </form>
+<hr>
+<a href="/reset_db" class="btn btn-danger btn-sm" onclick="return confirm('Borra TODO?')">🗑️ Borrar toda la base y empezar de cero</a>
 </div></body></html>
 """
 
@@ -192,33 +207,29 @@ def index():
     b_actual = int(request.args.get('bloque','1'))
     hoy_jul=hoy_juliano()
     conn=get_conn(); cur=conn.cursor()
-    cur.execute("SELECT id,codigo,bloque,nivel,calle,producto,juliano,estibas FROM lotes ORDER BY juliano ASC")
-    rows=cur.fetchall()
-    lotes=[]
-    grupos={} # codigo -> lista
-    tot_bloque={b:0 for b in range(1,BLOQUES+1)}
-    total_estibas=0
+    try:
+        cur.execute("SELECT id,codigo,bloque,nivel,calle,producto,juliano,estibas FROM lotes ORDER BY juliano ASC")
+        rows=cur.fetchall()
+    except:
+        rows=[]
+    lotes=[]; grupos={}; tot_bloque={b:0 for b in range(1,BLOQUES+1)}; total_estibas=0
     tot_verde=tot_amarillo=tot_rojo=0
     sema_bloque={b:{"verde":0,"amarillo":0,"rojo":0} for b in range(1,BLOQUES+1)}
-    sema_pos={}
-    lista_fifo=[]
+    sema_pos={}; lista_fifo=[]
     for r in rows:
-        if DATABASE_URL: id_,codigo,bloque,nivel,calle,producto,juliano,estibas=r
-        else: id_=r['id']; codigo=r['codigo']; bloque=r['bloque']; nivel=r['nivel']; calle=r['calle']; producto=r['producto']; juliano=r['juliano']; estibas=r['estibas']
-        if estibas<=0: continue
-        s=semaforo(juliano)
-        f=juliano_a_fecha(juliano)
-        fecha_str=f.strftime("%d/%m/%Y") if f else "-"
-        obj={"id":id_,"codigo":codigo,"bloque":bloque,"nivel":nivel,"calle":calle,"producto":producto,"juliano":juliano,"estibas":estibas,"sema":s,"fecha_str":fecha_str,"fecha":f}
-        lotes.append(obj)
-        grupos.setdefault(codigo, []).append(obj)
-        tot_bloque[bloque]+=estibas
-        total_estibas+=estibas
-        if s['color']=='#dc3545': tot_rojo+=1; sema_bloque[bloque]['rojo']+=1
-        elif s['color']=='#ffc107': tot_amarillo+=1; sema_bloque[bloque]['amarillo']+=1
-        else: tot_verde+=1; sema_bloque[bloque]['verde']+=1
-        lista_fifo.append(obj)
-    # semaforo por posicion = el mas viejo (rojo manda)
+        try:
+            if DATABASE_URL: id_,codigo,bloque,nivel,calle,producto,juliano,estibas=r
+            else: id_=r['id']; codigo=r['codigo']; bloque=r['bloque']; nivel=r['nivel']; calle=r['calle']; producto=r['producto']; juliano=r['juliano']; estibas=r['estibas']
+            if not estibas or estibas<=0: continue
+            s=semaforo(juliano); f=juliano_a_fecha(juliano); fecha_str=f.strftime("%d/%m/%Y") if f else "-"
+            obj={"id":id_,"codigo":codigo,"bloque":bloque,"nivel":nivel,"calle":calle,"producto":producto,"juliano":juliano,"estibas":estibas,"sema":s,"fecha_str":fecha_str,"fecha":f}
+            lotes.append(obj); grupos.setdefault(codigo, []).append(obj)
+            tot_bloque[bloque]+=estibas; total_estibas+=estibas
+            if s['color']=='#dc3545': tot_rojo+=1; sema_bloque[bloque]['rojo']+=1
+            elif s['color']=='#ffc107': tot_amarillo+=1; sema_bloque[bloque]['amarillo']+=1
+            else: tot_verde+=1; sema_bloque[bloque]['verde']+=1
+            lista_fifo.append(obj)
+        except: continue
     for codigo, lst in grupos.items():
         lst_sorted=sorted(lst, key=lambda x: x['sema']['dias'], reverse=True)
         sema_pos[codigo]=lst_sorted[0]['sema']
@@ -232,30 +243,34 @@ def index():
 def configuracion():
     conn=get_conn(); cur=conn.cursor()
     if request.method=="POST":
-        cur.execute("SELECT id FROM lotes")
-        for r in cur.fetchall():
-            id_=r[0] if DATABASE_URL else r['id']
-            if request.form.get(f"del_{id_}")=="on":
-                cur.execute("DELETE FROM lotes WHERE id=%s" if DATABASE_URL else "DELETE FROM lotes WHERE id=?",(id_,))
-            else:
-                prod=request.form.get(f"prod_{id_}")
-                est=request.form.get(f"est_{id_}")
-                jul=request.form.get(f"jul_{id_}")
-                try:
-                    jul=int(jul); est=int(est)
-                    f=juliano_a_fecha(jul)
-                    if DATABASE_URL: cur.execute("UPDATE lotes SET producto=%s, estibas=%s, juliano=%s, fecha_ing=%s WHERE id=%s",(prod,est,jul,f,id_))
-                    else: cur.execute("UPDATE lotes SET producto=?, estibas=?, juliano=?, fecha_ing=? WHERE id=?",(prod,est,jul,f.isoformat() if f else None,id_))
-                except: pass
-        conn.commit()
-    cur.execute("SELECT id,codigo,bloque,producto,juliano,estibas FROM lotes ORDER BY bloque, codigo, juliano")
-    rows=cur.fetchall()
+        try:
+            cur.execute("SELECT id FROM lotes")
+            for r in cur.fetchall():
+                id_=r[0] if DATABASE_URL else r['id']
+                if request.form.get(f"del_{id_}")=="on":
+                    cur.execute("DELETE FROM lotes WHERE id=%s" if DATABASE_URL else "DELETE FROM lotes WHERE id=?",(id_,))
+                else:
+                    prod=request.form.get(f"prod_{id_}"); est=request.form.get(f"est_{id_}"); jul=request.form.get(f"jul_{id_}")
+                    if prod and est and jul:
+                        try:
+                            jul=int(jul); est=int(est); f=juliano_a_fecha(jul)
+                            if DATABASE_URL: cur.execute("UPDATE lotes SET producto=%s, estibas=%s, juliano=%s, fecha_ing=%s WHERE id=%s",(prod,est,jul,f,id_))
+                            else: cur.execute("UPDATE lotes SET producto=?, estibas=?, juliano=?, fecha_ing=? WHERE id=?",(prod,est,jul,f.isoformat() if f else None,id_))
+                        except: pass
+            conn.commit()
+        except: conn.rollback()
+    try:
+        cur.execute("SELECT id,codigo,bloque,producto,juliano,estibas FROM lotes ORDER BY bloque, codigo, juliano")
+        rows=cur.fetchall()
+    except: rows=[]
     lotes=[]
     for r in rows:
-        if DATABASE_URL: id_,codigo,bloque,producto,juliano,estibas=r
-        else: id_=r['id']; codigo=r['codigo']; bloque=r['bloque']; producto=r['producto']; juliano=r['juliano']; estibas=r['estibas']
-        f=juliano_a_fecha(juliano)
-        lotes.append({"id":id_,"codigo":codigo,"bloque":bloque,"producto":producto,"juliano":juliano,"estibas":estibas,"sema":semaforo(juliano),"fecha_str":f.strftime("%d/%m/%Y") if f else "-"})
+        try:
+            if DATABASE_URL: id_,codigo,bloque,producto,juliano,estibas=r
+            else: id_=r['id']; codigo=r['codigo']; bloque=r['bloque']; producto=r['producto']; juliano=r['juliano']; estibas=r['estibas']
+            f=juliano_a_fecha(juliano)
+            lotes.append({"id":id_,"codigo":codigo,"bloque":bloque,"producto":producto,"juliano":juliano,"estibas":estibas,"sema":semaforo(juliano),"fecha_str":f.strftime("%d/%m/%Y") if f else "-"})
+        except: continue
     cur.close(); conn.close()
     return render_template_string(HTML_EDIT, lotes=lotes, hoy_jul=hoy_juliano())
 
@@ -264,40 +279,47 @@ def mov():
     b=int(request.form['bloque']); n=int(request.form['nivel']); c=int(request.form['calle'])
     codigo=f"B{b}-N{n}-C{c}"; producto=request.form['producto'].strip(); tipo=request.form['tipo']; cant=int(request.form['cantidad']); jul=int(request.form['juliano'])
     conn=get_conn(); cur=conn.cursor()
-    if tipo=="ALIMENTACION":
-        f=juliano_a_fecha(jul)
-        # si ya existe mismo producto y mismo juliano en esa calle, suma
-        if DATABASE_URL:
-            cur.execute("SELECT id, estibas FROM lotes WHERE codigo=%s AND producto=%s AND juliano=%s",(codigo,producto,jul))
-        else:
-            cur.execute("SELECT id, estibas FROM lotes WHERE codigo=? AND producto=? AND juliano=?",(codigo,producto,jul))
-        row=cur.fetchone()
-        if row:
-            id_=row[0]; est=row[1]
-            new_est=est+cant
-            if DATABASE_URL: cur.execute("UPDATE lotes SET estibas=%s WHERE id=%s",(new_est,id_))
-            else: cur.execute("UPDATE lotes SET estibas=? WHERE id=?",(new_est,id_))
-        else:
-            if DATABASE_URL: cur.execute("INSERT INTO lotes (codigo,bloque,nivel,calle,producto,juliano,estibas,fecha_ing) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",(codigo,b,n,c,producto,jul,cant,f))
-            else: cur.execute("INSERT INTO lotes (codigo,bloque,nivel,calle,producto,juliano,estibas,fecha_ing) VALUES (?,?,?,?,?,?,?,?)",(codigo,b,n,c,producto,jul,cant,f.isoformat() if f else None))
-    else: # DESPACHO FIFO por ese codigo
-        if DATABASE_URL:
-            cur.execute("SELECT id, estibas, juliano FROM lotes WHERE codigo=%s ORDER BY juliano ASC",(codigo,))
-        else:
-            cur.execute("SELECT id, estibas, juliano FROM lotes WHERE codigo=? ORDER BY juliano ASC",(codigo,))
-        por_despachar=cant
-        for r in cur.fetchall():
-            if por_despachar<=0: break
-            id_=r[0]; est=r[1]
-            if est<=por_despachar:
-                por_despachar-=est
-                cur.execute("DELETE FROM lotes WHERE id=%s" if DATABASE_URL else "DELETE FROM lotes WHERE id=?",(id_,))
-            else:
-                new_est=est-por_despachar
-                por_despachar=0
+    try:
+        if tipo=="ALIMENTACION":
+            f=juliano_a_fecha(jul)
+            if DATABASE_URL: cur.execute("SELECT id, estibas FROM lotes WHERE codigo=%s AND producto=%s AND juliano=%s",(codigo,producto,jul))
+            else: cur.execute("SELECT id, estibas FROM lotes WHERE codigo=? AND producto=? AND juliano=?",(codigo,producto,jul))
+            row=cur.fetchone()
+            if row:
+                id_=row[0]; est=row[1]; new_est=est+cant
                 cur.execute("UPDATE lotes SET estibas=%s WHERE id=%s" if DATABASE_URL else "UPDATE lotes SET estibas=? WHERE id=?",(new_est,id_))
-    conn.commit(); cur.close(); conn.close()
+            else:
+                if DATABASE_URL: cur.execute("INSERT INTO lotes (codigo,bloque,nivel,calle,producto,juliano,estibas,fecha_ing) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",(codigo,b,n,c,producto,jul,cant,f))
+                else: cur.execute("INSERT INTO lotes (codigo,bloque,nivel,calle,producto,juliano,estibas,fecha_ing) VALUES (?,?,?,?,?,?,?,?)",(codigo,b,n,c,producto,jul,cant,f.isoformat() if f else None))
+        else:
+            if DATABASE_URL: cur.execute("SELECT id, estibas FROM lotes WHERE codigo=%s ORDER BY juliano ASC",(codigo,))
+            else: cur.execute("SELECT id, estibas FROM lotes WHERE codigo=? ORDER BY juliano ASC",(codigo,))
+            por_despachar=cant
+            for r in cur.fetchall():
+                if por_despachar<=0: break
+                id_=r[0]; est=r[1]
+                if est<=por_despachar:
+                    por_despachar-=est
+                    cur.execute("DELETE FROM lotes WHERE id=%s" if DATABASE_URL else "DELETE FROM lotes WHERE id=?",(id_,))
+                else:
+                    new_est=est-por_despachar; por_despachar=0
+                    cur.execute("UPDATE lotes SET estibas=%s WHERE id=%s" if DATABASE_URL else "UPDATE lotes SET estibas=? WHERE id=?",(new_est,id_))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(e)
+    finally:
+        cur.close(); conn.close()
     return redirect(f"/?bloque={b}")
+
+@app.route("/reset_db")
+def reset_db():
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS lotes")
+    cur.execute("DROP TABLE IF EXISTS posiciones")
+    conn.commit(); cur.close(); conn.close()
+    init_db()
+    return redirect("/")
 
 if __name__=="__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT",5000)))
